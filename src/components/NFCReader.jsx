@@ -1,12 +1,12 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import { parseBalanceFromNDEFMessage } from "../utils/ndef";
 
 /**
- * NFC Reader with:
- * - Feature detection for Web NFC (NDEFReader)
- * - Start/Stop scanning
- * - On read: extract balance and show UI
- * - Mock mode toggle for desktop testing
+ * NFC Reader:
+ * - Detects if Web NFC is supported
+ * - Allows mock mode for desktop testing
+ * - Start / Stop scanning
+ * - Reads card ID + balance (via parseBalanceFromNDEFMessage)
  */
 export default function NFCReader({ onBalance }) {
   const [supported, setSupported] = useState(false);
@@ -15,9 +15,11 @@ export default function NFCReader({ onBalance }) {
   const [mockMode, setMockMode] = useState(false);
   const [lastBalance, setLastBalance] = useState(null);
   const [cardId, setCardId] = useState(null);
+  const readerRef = useRef(null);
 
   useEffect(() => {
     setSupported(typeof window !== "undefined" && "NDEFReader" in window);
+    return () => stopScan(); // cleanup on unmount
   }, []);
 
   const status = useMemo(() => {
@@ -30,48 +32,65 @@ export default function NFCReader({ onBalance }) {
     setError("");
     if (mockMode) {
       // Simulate a card scan
-      const fake = Math.round((Math.random() * 400 + 50) * 100) / 100;
+      const fakeBalance = Math.round((Math.random() * 400 + 50) * 100) / 100;
       setTimeout(() => {
-        setLastBalance(fake);
+        setLastBalance(fakeBalance);
         setCardId(`MOCK-${Math.random().toString(36).slice(2, 8)}`);
-        onBalance?.(fake);
+        onBalance?.(fakeBalance);
       }, 600);
       return;
     }
 
     if (!supported) {
-      setError("This device/browser doesn't support Web NFC (try Android Chrome over HTTPS).");
+      setError("❌ This device/browser doesn't support Web NFC. Try Android Chrome over HTTPS.");
       return;
     }
 
     try {
-      const reader = new NDEFReader();
+      const reader = new window.NDEFReader();
+      readerRef.current = reader;
       await reader.scan();
       setScanning(true);
 
-      reader.onreadingerror = () => setError("NFC reading error. Try again or reposition the card.");
+      reader.onreadingerror = () => {
+        setError("⚠️ NFC reading error. Try again or reposition the card.");
+      };
+
       reader.onreading = (event) => {
         try {
           const { message, serialNumber } = event;
-          const bal = parseBalanceFromNDEFMessage(message);
+          let balance = null;
+
+          try {
+            balance = parseBalanceFromNDEFMessage(message);
+          } catch (parseErr) {
+            console.warn("Parse error:", parseErr);
+            balance = null;
+          }
+
           setCardId(serialNumber || "(unknown)");
-          setLastBalance(bal);
-          onBalance?.(bal);
+          if (balance != null) {
+            setLastBalance(balance);
+            onBalance?.(balance);
+          } else {
+            setError("Could not parse balance from this card.");
+          }
         } catch (e) {
           console.error(e);
-          setError("Failed to parse NFC data.");
+          setError("❌ Failed to read NFC data.");
         }
       };
     } catch (err) {
       console.error(err);
-      setError(err?.message || "Failed to start NFC scan.");
+      setError(err?.message || "❌ Failed to start NFC scan.");
       setScanning(false);
     }
   }
 
   function stopScan() {
-    // Web NFC doesn't expose an explicit stop() yet; scanning stops when page leaves focus.
-    // We just reflect UI state.
+    // Web NFC API doesn’t have explicit stop()
+    // Scanning auto-stops when page loses focus
+    readerRef.current = null;
     setScanning(false);
   }
 
@@ -126,8 +145,8 @@ export default function NFCReader({ onBalance }) {
 
         {!supported && !mockMode && (
           <div className="text-xs text-slate-500">
-            Tip: Web NFC currently works on **Android Chrome** over **HTTPS**. If you’re testing on desktop,
-            toggle <b>Mock Mode</b>.
+            Tip: Web NFC currently works on <b>Android Chrome</b> over <b>HTTPS</b>.  
+            If you’re testing on desktop, enable <b>Mock Mode</b>.
           </div>
         )}
       </div>
